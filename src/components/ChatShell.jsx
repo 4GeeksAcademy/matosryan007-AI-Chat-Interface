@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { sendChatMessage } from '../services/chat.js';
 
 function Icon({ name, size = 16 }) {
@@ -33,27 +33,21 @@ function HistoryPanel({ conversations, onNew, onSelect, selected }) {
   </aside>;
 }
 
-function UsageSidebar({ total, promptTokens, completionTokens }) {
-  const used = Math.min(100, Math.round(total / 50000 * 100));
+function UsageSidebar({ total, promptTokens, completionTokens, model }) {
   return <aside className="usage-sidebar" aria-label="Token usage statistics">
     <div className="usage-heading"><div><span className="eyebrow">WORKSPACE</span><h2>Usage</h2></div><button className="icon-button" aria-label="More usage options"><Icon name="more" /></button></div>
     <section className="usage-card">
-      <div className="card-topline"><span>THIS MONTH</span><span className="live-dot">● LIVE</span></div>
+      <div className="card-topline"><span>THIS SESSION</span><span className="live-dot">● LIVE</span></div>
       <div className="total-tokens">{total.toLocaleString()}<span> tokens</span></div>
-      <div className="usage-track"><span style={{ width: `${used}%` }} /></div>
-      <div className="usage-foot"><span>{used}% of 50,000</span><span>Resets Nov 30</span></div>
     </section>
-    <section className="usage-section"><div className="section-heading"><h3>Token breakdown</h3><button className="period-select">This week <span>⌄</span></button></div>
-      <div className="token-row"><div className="token-label"><span className="token-dot input-dot" />Input tokens</div><strong>{promptTokens.toLocaleString()}</strong></div>
-      <div className="mini-track"><span className="input-fill" style={{ width: `${Math.max(8, promptTokens / Math.max(1, promptTokens + completionTokens) * 100)}%` }} /></div>
-      <div className="token-row second-row"><div className="token-label"><span className="token-dot output-dot" />Output tokens</div><strong>{completionTokens.toLocaleString()}</strong></div>
-      <div className="mini-track"><span className="output-fill" style={{ width: `${Math.max(8, completionTokens / Math.max(1, promptTokens + completionTokens) * 100)}%` }} /></div>
+    <section className="usage-section"><div className="section-heading"><h3>Token breakdown</h3></div>
+      <div className="token-row"><div className="token-label"><span className="token-dot input-dot" />Prompt tokens</div><strong>{promptTokens.toLocaleString()}</strong></div>
+      <div className="mini-track"><span className="input-fill" style={{ width: `${promptTokens / Math.max(1, total) * 100}%` }} /></div>
+      <div className="token-row second-row"><div className="token-label"><span className="token-dot output-dot" />Completion tokens</div><strong>{completionTokens.toLocaleString()}</strong></div>
+      <div className="mini-track"><span className="output-fill" style={{ width: `${completionTokens / Math.max(1, total) * 100}%` }} /></div>
     </section>
-    <section className="usage-section model-section"><div className="section-heading"><h3>By model</h3><button className="text-link">View all</button></div>
-      <div className="model-row"><span className="model-icon">✳</span><span className="model-name">GPT-4o</span><strong>{Math.max(0, total - 1240).toLocaleString()}</strong></div>
-      <div className="model-caption">Primary model · 98% of usage</div>
-      <div className="model-row second-model"><span className="model-icon model-icon-muted">✧</span><span className="model-name">GPT-4o mini</span><strong>{Math.min(total, 1240).toLocaleString()}</strong></div>
-      <div className="model-caption">Quick tasks · 2% of usage</div>
+    <section className="usage-section model-section"><div className="section-heading"><h3>Last response model</h3></div>
+      <div className="model-row"><span className="model-icon">✳</span><span className="model-name">{model || 'No responses yet'}</span></div>
     </section>
     <div className="usage-note"><span className="note-icon"><Icon name="spark" size={14} /></span><p><strong>Make every token count.</strong><br />Track your usage as you work.</p></div>
   </aside>;
@@ -64,12 +58,12 @@ export default function ChatShell({ title }) {
   const [draft, setDraft] = useState('');
   const [conversations, setConversations] = useState([]);
   const [selected, setSelected] = useState(-1);
+  const [usage, setUsage] = useState({ promptTokens: 0, completionTokens: 0, model: '' });
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState('');
   const [historyOpen, setHistoryOpen] = useState(true);
   const [usageOpen, setUsageOpen] = useState(true);
-  const promptTokens = useMemo(() => 1842 + messages.reduce((sum, item) => sum + Math.ceil(item.text.split(/\s+/).length * 1.35), 0), [messages]);
-  const completionTokens = useMemo(() => 920 + messages.filter(item => item.role === 'assistant').reduce((sum, item) => sum + Math.ceil(item.text.split(/\s+/).length * 1.45), 0), [messages]);
+  const { promptTokens, completionTokens, model } = usage;
   const total = promptTokens + completionTokens;
 
   async function submitMessage(event) {
@@ -83,6 +77,11 @@ export default function ChatShell({ title }) {
     setIsSending(true);
     try {
       const result = await sendChatMessage(nextMessages);
+      setUsage(current => ({
+        promptTokens: current.promptTokens + (Number.isFinite(result.usage?.prompt_tokens) ? Math.max(0, result.usage.prompt_tokens) : 0),
+        completionTokens: current.completionTokens + (Number.isFinite(result.usage?.completion_tokens) ? Math.max(0, result.usage.completion_tokens) : 0),
+        model: result.model || current.model,
+      }));
       const completedMessages = [...nextMessages, { role: 'assistant', text: result.message }];
       setMessages(completedMessages);
       if (selected === -1) {
@@ -141,7 +140,7 @@ export default function ChatShell({ title }) {
         <div className="model-footnote"><span className="lock-mark">◈</span> Converse can make mistakes. Check important info.</div>
       </div>
     </section>
-    {usageOpen && <UsageSidebar total={total} promptTokens={promptTokens} completionTokens={completionTokens} />}
+    {usageOpen && <UsageSidebar total={total} promptTokens={promptTokens} completionTokens={completionTokens} model={model} />}
     {!usageOpen && <button className="floating-usage" onClick={() => setUsageOpen(true)}>Usage overview <Icon name="chevron" /></button>}
   </main>;
 }
