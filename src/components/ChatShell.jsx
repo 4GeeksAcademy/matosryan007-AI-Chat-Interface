@@ -1,17 +1,5 @@
 import { useMemo, useState } from 'react';
-
-const starterMessages = [
-  { role: 'user', text: 'Can you help me plan a focused launch week for my new product?' },
-  { role: 'assistant', text: 'Absolutely. A focused launch week works best when every day has one clear goal. Here’s a lightweight plan to get you from final checks to your first customers.', detail: 'I’d start by locking the essentials: a clear landing page, one primary launch channel, and a simple way to collect feedback. Then build momentum with a small, deliberate sequence rather than trying to be everywhere at once.' },
-];
-
-const initialConversations = [
-  { title: 'Launch week plan', time: 'Just now', active: true },
-  { title: 'Product positioning notes', time: 'Yesterday' },
-  { title: 'Homepage headline ideas', time: 'Yesterday' },
-  { title: 'Customer interview guide', time: 'Oct 22' },
-  { title: 'Q4 content calendar', time: 'Oct 19' },
-];
+import { sendChatMessage } from '../services/chat.js';
 
 function Icon({ name, size = 16 }) {
   const paths = {
@@ -72,45 +60,72 @@ function UsageSidebar({ total, promptTokens, completionTokens }) {
 }
 
 export default function ChatShell({ title }) {
-  const [messages, setMessages] = useState(starterMessages);
+  const [messages, setMessages] = useState([]);
   const [draft, setDraft] = useState('');
-  const [conversations, setConversations] = useState(initialConversations);
-  const [selected, setSelected] = useState(0);
-  const [sentCount, setSentCount] = useState(0);
+  const [conversations, setConversations] = useState([]);
+  const [selected, setSelected] = useState(-1);
+  const [isSending, setIsSending] = useState(false);
+  const [error, setError] = useState('');
   const [historyOpen, setHistoryOpen] = useState(true);
   const [usageOpen, setUsageOpen] = useState(true);
   const promptTokens = useMemo(() => 1842 + messages.reduce((sum, item) => sum + Math.ceil(item.text.split(/\s+/).length * 1.35), 0), [messages]);
   const completionTokens = useMemo(() => 920 + messages.filter(item => item.role === 'assistant').reduce((sum, item) => sum + Math.ceil(item.text.split(/\s+/).length * 1.45), 0), [messages]);
   const total = promptTokens + completionTokens;
 
-  function submitMessage(event) {
+  async function submitMessage(event) {
     event.preventDefault();
     const text = draft.trim();
-    if (!text) return;
-    setMessages(current => [...current, { role: 'user', text }, { role: 'assistant', text: `That’s a great question. I’d approach “${text}” by breaking it into a few clear, manageable steps. Start with the outcome you want, choose the smallest useful next action, then refine from there.`, detail: 'Want me to turn that into a more detailed plan?' }]);
+    if (!text || isSending) return;
+    const nextMessages = [...messages, { role: 'user', text }];
+    setMessages(nextMessages);
     setDraft('');
-    setSentCount(count => count + 1);
+    setError('');
+    setIsSending(true);
+    try {
+      const result = await sendChatMessage(nextMessages);
+      const completedMessages = [...nextMessages, { role: 'assistant', text: result.message }];
+      setMessages(completedMessages);
+      if (selected === -1) {
+        setConversations(current => [{ title: text.slice(0, 48), time: 'Just now', messages: completedMessages }, ...current]);
+        setSelected(0);
+      } else {
+        setConversations(current => current.map((item, index) => index === selected
+          ? { ...item, title: messages.length === 0 ? text.slice(0, 48) : item.title, messages: completedMessages }
+          : item));
+      }
+    } catch (failure) {
+      setMessages(messages);
+      setDraft(text);
+      setError(failure.message);
+    } finally {
+      setIsSending(false);
+    }
   }
 
   function newChat() {
-    const next = [{ title: 'New conversation', time: 'Just now', active: true }, ...conversations.map(item => ({ ...item, active: false }))];
+    if (isSending) return;
+    setError('');
+    const next = [{ title: 'New conversation', time: 'Just now', messages: [] }, ...conversations];
     setConversations(next);
     setSelected(0);
     setMessages([]);
-    setSentCount(0);
+    setDraft('');
   }
 
   function selectConversation(index) {
+    if (isSending) return;
+    setError('');
     setSelected(index);
     if (index !== selected) {
-      setMessages(index === 0 ? starterMessages : [{ role: 'user', text: conversations[index].title }, { role: 'assistant', text: 'Let’s pick up where we left off. What would you like to explore next?', detail: 'Your conversation is ready when you are.' }]);
+      setMessages(conversations[index].messages);
+      setDraft('');
     }
   }
 
   return <main className="app-frame">
     {historyOpen && <HistoryPanel conversations={conversations} onNew={newChat} onSelect={selectConversation} selected={selected} />}
     <section className="chat-workspace">
-      <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" onClick={() => setHistoryOpen(!historyOpen)} aria-label="Toggle message history"><Icon name="sidebar" /></button><div className="model-picker"><span className="model-status" />{title === 'AI Chat' ? 'GPT-4o' : title}<span className="model-caret">⌄</span><span className="model-divider" /><span className="model-subtitle">Balanced</span></div></div><div className="topbar-right"><span className="saved-indicator"><span /> All changes saved</span><button className="icon-button" onClick={() => setUsageOpen(!usageOpen)} aria-label="Toggle usage sidebar"><Icon name="sidebar" /></button><button className="share-button">Share</button></div></header>
+      <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" onClick={() => setHistoryOpen(!historyOpen)} aria-label="Toggle message history"><Icon name="sidebar" /></button><div className="model-picker" title={title}><span className="model-status" />Qwen 3.8 27B<span className="model-caret">⌄</span><span className="model-divider" /><span className="model-subtitle">Balanced</span></div></div><div className="topbar-right"><span className="saved-indicator"><span /> All changes saved</span><button className="icon-button" onClick={() => setUsageOpen(!usageOpen)} aria-label="Toggle usage sidebar"><Icon name="sidebar" /></button><button className="share-button">Share</button></div></header>
       <div className="chat-content">
         <div className="thread-header"><div><div className="thread-kicker"><span className="thread-orb">✳</span> NEW CONVERSATION</div><h1>{conversations[selected]?.title || 'A little clarity goes a long way.'}</h1></div><button className="thread-more icon-button" aria-label="Conversation options"><Icon name="more" /></button></div>
         <div className="message-list" aria-live="polite">
@@ -118,9 +133,11 @@ export default function ChatShell({ title }) {
             {message.role === 'assistant' ? <div className="assistant-avatar">✳</div> : <div className="user-avatar">R</div>}
             <div className="message-body"><div className="message-meta"><strong>{message.role === 'user' ? 'You' : 'Converse'}</strong><span>{message.role === 'user' ? '2:41 PM' : 'Just now'}</span></div><p>{message.text}</p>{message.detail && <p className="message-detail">{message.detail}</p>}{message.role === 'assistant' && <div className="message-actions"><button aria-label="Copy response"><Icon name="copy" size={14} /></button><button aria-label="More response actions"><Icon name="more" size={14} /></button></div>}</div>
           </article>)}
-          {messages.length > 0 && <div className="thread-end"><span /> You&apos;re all caught up <span /></div>}
+          {isSending && <p role="status">Waiting for Qwen...</p>}
+          {error && <p role="alert">{error}</p>}
+          {messages.length > 0 && !isSending && <div className="thread-end"><span /> You&apos;re all caught up <span /></div>}
         </div>
-        <form className="composer" onSubmit={submitMessage}><label className="sr-only" htmlFor="message-input">Write a message</label><textarea id="message-input" value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.form.requestSubmit(); } }} placeholder="Message Converse..." rows={2} /><div className="composer-bottom"><div className="composer-tools"><button type="button" className="tool-button" aria-label="Add attachment"><span>＋</span></button><span className="composer-hint">Shift + Return to add a new line</span></div><div className="composer-right"><span className="token-estimate">{draft ? Math.ceil(draft.length / 4) : 0} tokens</span><button type="submit" className="send-button" aria-label="Send message" disabled={!draft.trim()}><Icon name="send" size={15} /></button></div></div></form>
+        <form className="composer" onSubmit={submitMessage} aria-busy={isSending}><label className="sr-only" htmlFor="message-input">Write a message</label><textarea id="message-input" value={draft} disabled={isSending} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.form.requestSubmit(); } }} placeholder="Message Converse..." rows={2} /><div className="composer-bottom"><div className="composer-tools"><button type="button" className="tool-button" aria-label="Add attachment"><span>＋</span></button><span className="composer-hint">Shift + Return to add a new line</span></div><div className="composer-right"><span className="token-estimate">{draft ? Math.ceil(draft.length / 4) : 0} tokens</span><button type="submit" className="send-button" aria-label="Send message" disabled={!draft.trim() || isSending}><Icon name="send" size={15} /></button></div></div></form>
         <div className="model-footnote"><span className="lock-mark">◈</span> Converse can make mistakes. Check important info.</div>
       </div>
     </section>
