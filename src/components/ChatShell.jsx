@@ -1,5 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { sendChatMessage } from '../services/chat.js';
+
+const HISTORY_STORAGE_KEY = 'converse.history';
+
+function isConversationHistory(value) {
+  return Array.isArray(value) && value.every(conversation =>
+    conversation && typeof conversation.title === 'string' &&
+    typeof conversation.time === 'string' && Array.isArray(conversation.messages) &&
+    conversation.messages.every(message => message &&
+      ['user', 'assistant'].includes(message.role) && typeof message.text === 'string' &&
+      (message.detail === undefined || typeof message.detail === 'string')));
+}
 
 function Icon({ name, size = 16 }) {
   const paths = {
@@ -63,13 +74,62 @@ export default function ChatShell({ title }) {
   const [error, setError] = useState('');
   const [historyOpen, setHistoryOpen] = useState(true);
   const [usageOpen, setUsageOpen] = useState(true);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
+  const [storageError, setStorageError] = useState('');
   const { promptTokens, completionTokens, model } = usage;
   const total = promptTokens + completionTokens;
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(HISTORY_STORAGE_KEY);
+      if (saved) {
+        const history = JSON.parse(saved);
+        if (!isConversationHistory(history?.conversations)) throw new Error('Invalid history');
+        const index = Number.isInteger(history.selected) && history.selected >= 0 &&
+          history.selected < history.conversations.length ? history.selected : 0;
+        setConversations(history.conversations);
+        setSelected(history.conversations.length ? index : -1);
+        setMessages(history.conversations[index]?.messages || []);
+      }
+    } catch {
+      setStorageError('Saved conversations could not be loaded. You can still chat, but history may not be saved.');
+    } finally {
+      setHistoryLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!historyLoaded) return;
+    try {
+      if (conversations.length === 0) {
+        localStorage.removeItem(HISTORY_STORAGE_KEY);
+      } else {
+        localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify({ conversations, selected }));
+      }
+    } catch {
+      setStorageError('Conversation history could not be saved. Browser storage may be full or disabled.');
+    }
+  }, [conversations, selected, historyLoaded]);
+
+  function clearConversation() {
+    if (isSending || !historyLoaded) return;
+    setMessages([]);
+    setConversations([]);
+    setSelected(-1);
+    setDraft('');
+    setError('');
+    setStorageError('');
+    try {
+      localStorage.removeItem(HISTORY_STORAGE_KEY);
+    } catch {
+      setStorageError('Messages were cleared, but saved history could not be removed from browser storage.');
+    }
+  }
 
   async function submitMessage(event) {
     event.preventDefault();
     const text = draft.trim();
-    if (!text || isSending) return;
+    if (!text || isSending || !historyLoaded) return;
     const nextMessages = [...messages, { role: 'user', text }];
     setMessages(nextMessages);
     setDraft('');
@@ -102,7 +162,7 @@ export default function ChatShell({ title }) {
   }
 
   function newChat() {
-    if (isSending) return;
+    if (isSending || !historyLoaded) return;
     setError('');
     const next = [{ title: 'New conversation', time: 'Just now', messages: [] }, ...conversations];
     setConversations(next);
@@ -112,7 +172,7 @@ export default function ChatShell({ title }) {
   }
 
   function selectConversation(index) {
-    if (isSending) return;
+    if (isSending || !historyLoaded) return;
     setError('');
     setSelected(index);
     if (index !== selected) {
@@ -124,7 +184,7 @@ export default function ChatShell({ title }) {
   return <main className="app-frame">
     {historyOpen && <HistoryPanel conversations={conversations} onNew={newChat} onSelect={selectConversation} selected={selected} />}
     <section className="chat-workspace">
-      <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" onClick={() => setHistoryOpen(!historyOpen)} aria-label="Toggle message history"><Icon name="sidebar" /></button><div className="model-picker" title={title}><span className="model-status" />Qwen 3.8 27B<span className="model-caret">⌄</span><span className="model-divider" /><span className="model-subtitle">Balanced</span></div></div><div className="topbar-right"><span className="saved-indicator"><span /> All changes saved</span><button className="icon-button" onClick={() => setUsageOpen(!usageOpen)} aria-label="Toggle usage sidebar"><Icon name="sidebar" /></button><button className="share-button">Share</button></div></header>
+      <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" onClick={() => setHistoryOpen(!historyOpen)} aria-label="Toggle message history"><Icon name="sidebar" /></button><div className="model-picker" title={title}><span className="model-status" />Qwen 3.8 27B<span className="model-caret">⌄</span><span className="model-divider" /><span className="model-subtitle">Balanced</span></div></div><div className="topbar-right"><span className="saved-indicator"><span /> All changes saved</span><button className="icon-button" onClick={() => setUsageOpen(!usageOpen)} aria-label="Toggle usage sidebar"><Icon name="sidebar" /></button><button type="button" className="share-button" onClick={clearConversation} disabled={isSending || !historyLoaded} title="Clear conversation and all saved chat history">Clear conversation</button></div></header>
       <div className="chat-content">
         <div className="thread-header"><div><div className="thread-kicker"><span className="thread-orb">✳</span> NEW CONVERSATION</div><h1>{conversations[selected]?.title || 'A little clarity goes a long way.'}</h1></div><button className="thread-more icon-button" aria-label="Conversation options"><Icon name="more" /></button></div>
         <div className="message-list" aria-live="polite">
@@ -134,6 +194,7 @@ export default function ChatShell({ title }) {
           </article>)}
           {isSending && <p role="status">Waiting for Qwen...</p>}
           {error && <p role="alert">{error}</p>}
+          {storageError && <p role="alert">{storageError}</p>}
           {messages.length > 0 && !isSending && <div className="thread-end"><span /> You&apos;re all caught up <span /></div>}
         </div>
         <form className="composer" onSubmit={submitMessage} aria-busy={isSending}><label className="sr-only" htmlFor="message-input">Write a message</label><textarea id="message-input" value={draft} disabled={isSending} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) { event.preventDefault(); event.currentTarget.form.requestSubmit(); } }} placeholder="Message Converse..." rows={2} /><div className="composer-bottom"><div className="composer-tools"><button type="button" className="tool-button" aria-label="Add attachment"><span>＋</span></button><span className="composer-hint">Shift + Return to add a new line</span></div><div className="composer-right"><span className="token-estimate">{draft ? Math.ceil(draft.length / 4) : 0} tokens</span><button type="submit" className="send-button" aria-label="Send message" disabled={!draft.trim() || isSending}><Icon name="send" size={15} /></button></div></div></form>
